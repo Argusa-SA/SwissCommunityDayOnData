@@ -1,0 +1,269 @@
+import streamlit as st
+from snowflake.snowpark.context import get_active_session
+import json
+
+# Page configuration
+st.set_page_config(
+    page_title="Residence School Food Allergy Assistant",
+    page_icon="🏫",
+    layout="wide"
+)
+
+# Initialize Snowflake session
+@st.cache_resource
+def get_snowflake_session():
+    return get_active_session()
+
+session = get_snowflake_session()
+
+# Constants
+CORTEX_SEARCH_SERVICE = "demo_workshop_sdcc.public.RESIDENCE_SCHOOL_CHATBOT_SEARCH"
+TABLE_NAME = "demo_workshop_sdcc.public.residence_school_mart_zg_translated"
+
+# Initialize chat history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# App header
+st.title("🏫 Residence School Food Allergy Assistant")
+st.markdown("Ask questions about children's food allergies, schools, and residential information")
+
+# Sidebar with information
+with st.sidebar:
+    st.header("ℹ️ About")
+    st.markdown("""
+    This chatbot helps you find information about:
+    - Student food allergies
+    - School assignments
+    - Residential locations
+    - Distance to schools
+    - Canton and municipality data
+    
+    **Example questions:**
+    - Do any students go to the same school?
+    - How many children have nut allergies?
+    - Show me students at [School Name]
+    - Which students live closest to their school?
+    - List students with multiple allergies
+    - What schools are in the database?
+    """)
+    
+    if st.button("Clear Chat History", use_container_width=True):
+        st.session_state.messages = []
+        st.rerun()
+
+# Function to query Cortex Search
+def query_cortex_search(question: str, limit: int = 10) -> dict:
+    """Query the Cortex Search service"""
+    try:
+        # Escape single quotes in the question
+        safe_question = question.replace("'", "''")
+        
+        # Include columns parameter to get all attributes
+        search_options = {
+            "query": safe_question,
+            "columns": [
+                "RESIDENCE_ID", "STREET", "STUDENT_NAME", "MUNICIPALITY", 
+                "ZIP_LOCALITY", "BUILDING_CANTON", "SCHOOL_ID", "SCHOOL_NAME", 
+                "DISTANCE_METERS", "allergies_text"
+            ],
+            "limit": limit
+        }
+        
+        query = f"""
+        SELECT SNOWFLAKE.CORTEX.SEARCH_PREVIEW(
+            '{CORTEX_SEARCH_SERVICE}',
+            '{json.dumps(search_options).replace("'", "''")}'
+        ) as response
+        """
+        result = session.sql(query).collect()
+        
+        if result:
+            response_data = json.loads(result[0]['RESPONSE'])
+            return response_data
+        return None
+    except Exception as e:
+        st.error(f"Error querying Cortex Search: {str(e)}")
+        return None
+
+# Function to get total count from table
+def get_total_student_count() -> int:
+    """Get total number of students with allergies in the database"""
+    try:
+        query = f"""
+        SELECT COUNT(DISTINCT STUDENT_NAME) as total_students
+        FROM {TABLE_NAME}
+        WHERE ALLERGIES IS NOT NULL
+        """
+        result = session.sql(query).collect()
+        if result:
+            return result[0]['TOTAL_STUDENTS']
+        return 0
+    except Exception as e:
+        st.error(f"Error getting student count: {str(e)}")
+        return 0
+
+# Function to query table directly for counts and aggregations
+def query_table_directly(sql_query: str):
+    """Execute a direct SQL query on the table"""
+    try:
+        result = session.sql(sql_query).collect()
+        return result
+    except Exception as e:
+        st.error(f"Error querying table: {str(e)}")
+        return None
+
+# Function to format search results for context
+def format_context(results: list) -> str:
+    """Format search results into readable context"""
+    if not results:
+        return "No results found."
+    
+    context_parts = []
+    for i, result in enumerate(results, 1):
+        # Try both uppercase and lowercase field names
+        allergies_raw = result.get('ALLERGIES_TEXT') or result.get('allergies_text', 'N/A')
+        
+        # Treat "none" as no allergy
+        if allergies_raw and str(allergies_raw).strip().upper() == 'NONE':
+            allergies = 'No allergies'
+        else:
+            allergies = allergies_raw
+        record = f"""
+Student {i}:
+- Name: {result.get('STUDENT_NAME', 'N/A')}
+- School: {result.get('SCHOOL_NAME', 'N/A')} (ID: {result.get('SCHOOL_ID', 'N/A')})
+- Allergies: {allergies}
+- Location: {result.get('STREET', 'N/A')}, {result.get('MUNICIPALITY', 'N/A')}
+- Canton: {result.get('BUILDING_CANTON', 'N/A')}
+- ZIP: {result.get('ZIP_LOCALITY', 'N/A')}
+- Distance to School: {result.get('DISTANCE_METERS', 'N/A')} meters
+- Residence ID: {result.get('RESIDENCE_ID', 'N/A')}
+"""
+        context_parts.append(record.strip())
+    
+    return "\n\n".join(context_parts)
+
+# Function to generate response using Cortex Complete
+def generate_response(question: str, context: str, total_count: int = None) -> str:
+    """Generate a natural language response using Cortex Complete"""
+    try:
+        count_info = f"\n\nIMPORTANT: The total number of students with food allergies in the database is {total_count}. The context above shows only a sample of {context.count('Student ')}, not all students." if total_count else ""
+        
+        prompt = f"""You are a helpful assistant for a Swiss residence school database focused on food allergies and student information.
+
+Available data for each student includes:
+- Student name
+- School name and ID
+- Food allergies (if a student has "No allergies" or "none", they have no food allergies)
+- Residential address (street, municipality, canton, ZIP)
+- Distance to school in meters
+- Residence ID
+
+Context from database (showing top matching results):
+{context}{count_info}
+
+User Question: {question}
+
+Instructions:
+- Answer based on the context provided above
+- The context shows real data about students, their schools, allergies, and locations
+- If the question asks about total counts or "how many", use the total count provided ({total_count} total students with allergies)
+- If the question asks for a list of names, you can only provide names from the sample shown in context
+- For school-related questions, use the SCHOOL_NAME and SCHOOL_ID fields
+- Be specific and reference actual data from the context
+- If you need more data than shown in the sample, mention that only a sample is displayed
+- If you cannot find the answer in the context, say so clearly
+
+Answer:"""
+        
+        # Escape single quotes for SQL
+        safe_prompt = prompt.replace("'", "''")
+        
+        query = f"""
+        SELECT SNOWFLAKE.CORTEX.COMPLETE(
+            'mistral-large2',
+            '{safe_prompt}'
+        ) as response
+        """
+        
+        result = session.sql(query).collect()
+        if result:
+            return result[0]['RESPONSE']
+        return "I apologize, but I couldn't generate a response."
+    except Exception as e:
+        return f"Error generating response: {str(e)}"
+
+# Display chat messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if "results" in message and message["results"]:
+            with st.expander("📊 View Source Data"):
+                for i, result in enumerate(message["results"], 1):
+                    st.markdown(f"**Record {i}:**")
+                    st.json(result)
+
+# Chat input
+if prompt := st.chat_input("Ask about food allergies, schools, and student information..."):
+    # Add user message to chat
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    
+    # Generate assistant response
+    with st.chat_message("assistant"):
+        with st.spinner("Searching database..."):
+            # Get total count for accurate statistics
+            total_students = get_total_student_count()
+            
+            # Query Cortex Search with more results for better coverage
+            search_results = query_cortex_search(prompt, limit= total_students)
+            
+            if search_results and 'results' in search_results:
+                results = search_results['results']
+                
+                if results:
+                    # Format context from search results
+                    context = format_context(results)
+                    
+                    # Generate natural language response with total count
+                    response = generate_response(prompt, context, total_students)
+                    
+                    st.markdown(response)
+                    
+                    # Show database stats
+                    if total_students:
+                        st.info(f"📊 Database contains **{total_students} total students** with food allergies. Showing top {len(results)} matching results.")
+                    
+                    # Show source data in expander
+                    with st.expander(f"📋 View Source Data ({len(results)} of {total_students} total records)"):
+                        for i, result in enumerate(results, 1):
+                            st.markdown(f"**Record {i}:**")
+                            st.json(result)
+                    
+                    # Save to chat history
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": response,
+                        "results": results
+                    })
+                else:
+                    error_msg = "No matching records found in the database. Please try a different question."
+                    st.markdown(error_msg)
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": error_msg
+                    })
+            else:
+                error_msg = "I couldn't retrieve information from the database. Please try rephrasing your question."
+                st.markdown(error_msg)
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": error_msg
+                })
+
+# Footer
+st.markdown("---")
+st.markdown("*Powered by Snowflake Cortex Search & AI*")
