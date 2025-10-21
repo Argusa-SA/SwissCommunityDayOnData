@@ -1,2 +1,2 @@
-# DataCommunityDayOnData
-Workshop Data Community Day on Data
+# Workshop Swiss Community Day on Data
+Workshop Swiss Community Day on Data
