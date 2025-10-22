@@ -1,14 +1,10 @@
 -- create a demo db/schema: DEMO_NAME_SDCC; 
-CREATE DATABASE IF NOT EXISTS DEMO_WORKSHOP_SDCC;
-CREATE SCHEMA IF NOT EXISTS DEMO_WORKSHOP_SDCC.PUBLIC;
+CREATE DATABASE IF NOT EXISTS DEMO_Parozzi_SDCC;
 
---USE DATABASE swiss_geographic_basics;
---USE SCHEMA swiss_geo_basics;
-
-USE DATABASE  DEMO_WORKSHOP_SDCC;
+USE DATABASE  DEMO_Parozzi_SDCC;
 USE SCHEMA PUBLIC;
 
-
+/*
 -- create a table to load the students file information. 
 CREATE OR REPLACE TABLE students ( --since we're inside a shared read-only database, I have to create the table within the database and address fully the workspace database
 building_id INT, 
@@ -20,7 +16,10 @@ COPY INTO students
 FROM @demo_workshop_sdcc.public.data/building_residents_allergies.csv
 FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY='"' SKIP_HEADER=1);
 
+*/
+
 select * from students;
+
 
 -- now let's look at the database data and filter it for the schools and residential buildings in canton Zoug 
 select * from swiss_geographic_basics.swiss_geo_basics.buildings
@@ -34,10 +33,11 @@ SPLIT_PART(ZIP_LOCALITY, ' ', 2) AS LOCALITY
 FROM swiss_geographic_basics.swiss_geo_basics.buildings
 WHERE official = TRUE
 AND canton = 'ZG'
-AND building_category = 'residential' OR building_name ILIKE '%Schul%';
+AND (building_category = 'residential' OR building_name ILIKE '%Schul%');
 
-select * from buildings_zg
+select * from buildings_zg;
 
+select * from swiss_geographic_basics.swiss_geo_basics.streets;
 
 CREATE OR REPLACE VIEW streets_zg AS
 SELECT *
@@ -58,12 +58,12 @@ SELECT DISTINCT
     b.latitude,
     b.longitude,
     s.MUNICIPALITY,
-    b.POINT_WGS84SWISS_GEOGRAPHIC_BASICS.SWISS_GEO_BASICS.STREETS
+    b.POINT_WGS84
 FROM buildings_zg b
 JOIN streets_zg s
   ON b.street_id = s.street_id;
 
-select * from buildings_with_municipality_zg  
+select * from buildings_with_municipality_zg; 
 
 -- let's separate all the residential buildings from the schools 
 CREATE OR REPLACE VIEW residences_zg AS
@@ -71,33 +71,33 @@ SELECT *
 FROM buildings_with_municipality_zg
 WHERE building_category = 'residential';
 
-select * from residences_zg 
+select * from residences_zg;
 --limit 1000; 
 
 -- let's join the residences table with the file table to mantain only the residents of the students we have collected. 
 CREATE OR REPLACE TABLE buildings_zg_students AS
 SELECT
 r.*,
-s.student_name, 
-s.allergies
+s.name as student_name, 
+s.food_allergies as allergies
 FROM residences_zg r 
 JOIN students s 
 ON r.building_id = s.building_id; 
 
-select * from buildings_zg_students 
+select * from buildings_zg_students; 
 
 -- let's separate the schools 
 CREATE OR REPLACE VIEW schools_zg AS
 SELECT *
 FROM buildings_with_municipality_zg
 WHERE building_name ILIKE '%Schul%'; 
-select * from public.schools_zg
+select * from public.schools_zg;
 
 -- we now create a new table with the average distance of each residence to the nearest school keeping the info from the students table. 
-CREATE OR REPLACE VIEW students_zg_sample AS
-SELECT *
-FROM buildings_zg_students
-SAMPLE (100 ROWS);
+--CREATE OR REPLACE VIEW students_zg_sample AS
+--SELECT *
+--FROM buildings_zg_students
+
 
 CREATE OR REPLACE TABLE residence_school_mart_zg AS
 SELECT 
@@ -111,7 +111,7 @@ SELECT
     s.BUILDING_ID AS school_id,
     s.BUILDING_NAME AS school_name,
     ST_DISTANCE(r.POINT_WGS84, s.POINT_WGS84) AS distance_meters--compute geospacial distance between school and residence in meters
-FROM students_zg_sample r
+FROM buildings_zg_students r
 JOIN schools_zg s
     ON ABS(r.LATITUDE - s.LATITUDE) < 0.1
     AND ABS(r.LONGITUDE - s.LONGITUDE) < 0.1
@@ -120,7 +120,7 @@ QUALIFY ROW_NUMBER() OVER (   --assigns a ranking to each residence-school pair
     ORDER BY ST_DISTANCE(r.POINT_WGS84, s.POINT_WGS84)  -- order schools by their distance from that residence 
 ) = 1;  -- keep only the nearest school for each residence . --> we should get one residence + its closest school + distance in meters 
 
-select * from residence_school_mart_zg
+select * from residence_school_mart_zg;
 
 
 -- now we translate the the allergies in swiss languages usign snowflakes' LLM: Cortex
@@ -133,7 +133,7 @@ SELECT
     SNOWFLAKE.CORTEX.TRANSLATE(m.allergies, 'en', 'it') AS allergies_italian
 FROM residence_school_mart_zg m;
 
-select * from residence_school_mart_zg_translated
+select * from residence_school_mart_zg_translated;
 
 
 SELECT 
