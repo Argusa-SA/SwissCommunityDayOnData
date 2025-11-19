@@ -16,9 +16,12 @@ In this workshop, we explore how to use Snowflake for:
  -Building an interactive Streamlit chatbot that queries student allergy information in natural language.
 
 
-Snowflake credentials: 
+Snowflake credentials:   
+
 USERNAME: SCDD
+
 PASSWORD: Swisscommunitydaydata2025
+
 link: https://cvhawsm-uj05793.snowflakecomputing.com
 
 
