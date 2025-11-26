@@ -1,8 +1,17 @@
 -- create a demo db/schema: DEMO_NAME_SDCC; 
-CREATE DATABASE IF NOT EXISTS DEMO_Parozzi_SDCC;
+CREATE DATABASE IF NOT EXISTS DEMO_{NAME}_SDCC;
 
-USE DATABASE  DEMO_Parozzi_SDCC;
+USE DATABASE  DEMO_{NAME}_SDCC;
 USE SCHEMA PUBLIC;
+
+-- STEP 1:
+-- we first look at the source database and the csv file
+select * from swiss_geographic_basics.swiss_geo_basics.buildings
+limit 20;
+
+-- add file through plus sign and load it into a table called "students"
+select * from students;
+
 
 /*
 -- create a table to load the students file information. 
@@ -18,14 +27,9 @@ FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY='"' SKIP_HEADER=1);
 
 */
 
-select * from students;
 
-
--- now let's look at the database data and filter it for the schools and residential buildings in canton Zoug 
-select * from swiss_geographic_basics.swiss_geo_basics.buildings
-limit 20
-
-
+-- STEP 2: 
+-- create a view to select only residential and school building in canton Zoug
 CREATE OR REPLACE VIEW buildings_zg AS
 SELECT *,
 SPLIT_PART(ZIP_LOCALITY, ' ', 1) AS ZIP, --we create 2 extra columns for future use
@@ -37,15 +41,16 @@ AND (building_category = 'residential' OR building_name ILIKE '%Schul%');
 
 select * from buildings_zg;
 
+
 select * from swiss_geographic_basics.swiss_geo_basics.streets;
 
 CREATE OR REPLACE VIEW streets_zg AS
 SELECT *
 FROM swiss_geographic_basics.swiss_geo_basics.streets
 WHERE canton = 'ZG';
-select * from streets_zg
+select * from streets_zg;
 
--- let's do a join to add the information about the municipality 
+-- let's do a join to add the information about the municipality from the table streets 
 CREATE OR REPLACE VIEW buildings_with_municipality_zg AS
 SELECT DISTINCT
     b.building_category,
@@ -93,12 +98,9 @@ FROM buildings_with_municipality_zg
 WHERE building_name ILIKE '%Schul%'; 
 select * from public.schools_zg;
 
+
+-- STEP 3: 
 -- we now create a new table with the average distance of each residence to the nearest school keeping the info from the students table. 
---CREATE OR REPLACE VIEW students_zg_sample AS
---SELECT *
---FROM buildings_zg_students
-
-
 CREATE OR REPLACE TABLE residence_school_mart_zg AS
 SELECT 
     r.BUILDING_ID AS residence_id,
@@ -122,20 +124,6 @@ QUALIFY ROW_NUMBER() OVER (   --assigns a ranking to each residence-school pair
 
 select * from residence_school_mart_zg;
 
-
--- now we translate the the allergies in swiss languages usign snowflakes' LLM: Cortex
-
-CREATE OR REPLACE TABLE residence_school_mart_zg_translated AS
-SELECT
-    *,
-    SNOWFLAKE.CORTEX.TRANSLATE(m.allergies, 'en', 'fr') AS allergies_french,
-    SNOWFLAKE.CORTEX.TRANSLATE(m.allergies, 'en', 'de') AS allergies_german,
-    SNOWFLAKE.CORTEX.TRANSLATE(m.allergies, 'en', 'it') AS allergies_italian
-FROM residence_school_mart_zg m;
-
-select * from residence_school_mart_zg_translated;
-
-
 SELECT 
     MUNICIPALITY,
     COUNT(*) AS num_residences, -- counting the number of rows per group=municipality 
@@ -148,10 +136,25 @@ ORDER BY avg_distance DESC
 LIMIT 20;
 
 
+-- STEP 4: 
+-- now we translate the the allergies in swiss languages usign snowflakes' LLM: Cortex
+ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'AWS_US';
+
+CREATE OR REPLACE TABLE residence_school_mart_zg_translated AS
+SELECT
+    *,
+    SNOWFLAKE.CORTEX.TRANSLATE(m.allergies, 'en', 'fr') AS allergies_french,
+    SNOWFLAKE.CORTEX.TRANSLATE(m.allergies, 'en', 'de') AS allergies_german,
+    SNOWFLAKE.CORTEX.TRANSLATE(m.allergies, 'en', 'it') AS allergies_italian
+FROM residence_school_mart_zg m;
+
+select * from residence_school_mart_zg_translated;
+
+
 CREATE OR REPLACE CORTEX SEARCH SERVICE RESIDENCE_SCHOOL_CHATBOT_SEARCH
     ON allergies_text
-    ATTRIBUTES RESIDENCE_ID, STREET, STUDENT_NAME, MUNICIPALITY, ZIP_LOCALITY, BUILDING_CANTON, SCHOOL_ID, SCHOOL_NAME, DISTANCE_METERS
-    WAREHOUSE = ARGUSA_TRAINING_WH
+    ATTRIBUTES RESIDENCE_ID, STREET, STUDENT_NAME, MUNICIPALITY, ZIP_LOCALITY, BUILDING_CANTON, SCHOOL_ID, SCHOOL_NAME, DISTANCE_METERS, ALLERGIES_GERMAN, ALLERGIES_FRENCH, ALLERGIES_ITALIAN
+    WAREHOUSE = COMPUTE_WH
     TARGET_LAG = '1 hour'
     AS (
         SELECT 
@@ -164,8 +167,12 @@ CREATE OR REPLACE CORTEX SEARCH SERVICE RESIDENCE_SCHOOL_CHATBOT_SEARCH
             BUILDING_CANTON,
             SCHOOL_ID,
             SCHOOL_NAME,
+            ALLERGIES_FRENCH,
+            ALLERGIES_GERMAN,
+            ALLERGIES_ITALIAN,
             DISTANCE_METERS
         FROM residence_school_mart_zg_translated
     );
 
 GRANT USAGE ON CORTEX SEARCH SERVICE RESIDENCE_SCHOOL_CHATBOT_SEARCH TO ROLE ACCOUNTADMIN;
+select * from residence_school_mart_zg_translated
