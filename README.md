@@ -17,7 +17,7 @@ In this workshop, we explore how to use Snowflake for:
 
 snowflake SCDD: 
 
-username: SDCC
-password: Swisscommunitydaydata2025
+username: SCDD
+password: Swisscommunitydaydata2025!
 
 login:   https://cvhawsm-uj05793.snowflakecomputing.com
